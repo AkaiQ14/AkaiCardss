@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>QG14 Card Clash</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: scale(0.9);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+    
+    @keyframes bounce {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-10px);
+      }
+    }
+    
+    .modal-enter {
+      animation: fadeIn 0.3s ease-out;
+    }
+    
+    .icon-bounce {
+      animation: bounce 0.6s ease-in-out;
+    }
+  </style>
+</head>
+<body class="bg-[#4B0E1F] text-white min-h-screen flex flex-col items-center justify-center space-y-6 overflow-hidden">
+  <div class="w-full h-full p-6 flex flex-col items-center justify-center space-y-6">
+    <h1 class="text-4xl font-bold text-center">🏆 النتيجة النهائية 🏆</h1>
+  
+    <div id="scoreBox" class="text-center text-2xl space-y-4"></div>
+  
+    <button
+      onclick="playAgain()"
+      class="bg-green-600 hover:bg-green-700 text-white px-8 py-2 rounded text-lg"
+    >
+      بدء لعبة جديدة
+    </button>
+  </div>
+  
+  <img src="../images/qg14-Card-Clash-logo.png" alt="QG14 Logo"
+       class="fixed bottom-4 right-4 w-40 h-auto opacity-90 pointer-events-none" />
+
+  <script src="score.js"></script>
+  <script src="../copyright.js"></script>
+  
+</body>
+</html>
