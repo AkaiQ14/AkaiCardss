@@ -56,9 +56,10 @@ function shuffleInPlace(arr) {
   return arr;
 }
 
-function isImageFile(f) {
-  return /\.(png|jpg|jpeg|webp|gif)$/i.test(String(f));
+function isMediaFile(f) {
+  return /\.(png|jpg|jpeg|webp|gif|avif|bmp|svg|apng|webm|mp4|ogg)$/i.test(String(f));
 }
+
 
 async function fetchFolderList(folder) {
   const res = await fetch(`/list-images/${folder}`);
@@ -73,8 +74,9 @@ async function buildAllCards() {
     fetchFolderList("normal").catch(() => []),
   ]);
 
-  const legendaryFiles = legendaryFilesRaw.filter(isImageFile);
-  const normalFiles = normalFilesRaw.filter(isImageFile);
+ const legendaryFiles = legendaryFilesRaw.filter(isMediaFile);
+ const normalFiles = normalFilesRaw.filter(isMediaFile);
+
 
   const all = [
     ...legendaryFiles.map(f => ({
