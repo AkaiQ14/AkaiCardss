@@ -227,18 +227,31 @@ function syncServerAbilities(){
 }
 
 function createMedia(url, className, playSfx = false) {
-  const isWebm = /\.webm(\?|#|$)/i.test(url || "");
-  if (isWebm) {
+  const u = String(url || "");
+  const isWebm = /\.webm(\?|#|$)/i.test(u);
+  const isVideo = /\.(webm|mp4)(\?|#|$)/i.test(u);
+
+  if (isVideo) {
     const v = document.createElement("video");
-    v.src = url; v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
+    v.src = u;
+    v.autoplay = true;
+    v.loop = true;
+    v.muted = true;
+    v.playsInline = true;
     v.className = className;
-    if (playSfx && window.WebmSfx) window.WebmSfx.attachToMedia(v, url);
+
+    // ✅ الصوت/المؤثرات فقط للـ webm (لو عندك نظام WebmSfx)
+    if (isWebm && playSfx && window.WebmSfx) window.WebmSfx.attachToMedia(v, u);
+
     return v;
-  } else {
-    const img = document.createElement("img");
-    img.src = url; img.className = className; return img;
   }
+
+  const img = document.createElement("img");
+  img.src = u;
+  img.className = className;
+  return img;
 }
+
 
 function abilityRow(ab, onToggle) {
   const row = document.createElement("button");
