@@ -2,7 +2,7 @@ const randomSound = new Audio("/sounds/random.mp3");
 randomSound.volume = 1.0;
 
 // ================= CONFIG =================
-let LEGENDARY_RATE = 0.1; // يبقى فقط لو تحتاجه لاحقًا
+let LEGENDARY_RATE = 0.1; // سيتم جلبها من /api/config (من ENV)
 // ==========================================
 
 const roundCount = parseInt(localStorage.getItem("totalRounds") || "3", 10);
@@ -28,33 +28,52 @@ const instruction = document.getElementById("instruction");
 const boxGrid = document.getElementById("boxGrid");
 const confirmBtn = document.getElementById("confirmBtn");
 
-const BOARD_SIZE = 20; // تبقى 20 اختيار ✅
+// Modal elements (optional if exists)
+const tacticModal = document.getElementById("tacticModal");
+const tacticSelectEl = document.getElementById("tacticSelect");
 
-let imageMap = {};      // index(1..20) -> card meta
-let selectedBoxes = []; // selected indices
+const BOARD_SIZE = 20;
 
-const gameID = localStorage.getItem("gameID") || "default"; // عندك موجود :contentReference[oaicite:1]{index=1}
+let imageMap = {};      // 1..20 -> {folder, filename, key, fullPath}
+let selectedBoxes = []; // indices
+
+const gameID = localStorage.getItem("gameID") || "default";
 
 // ===== Auto Clean Old Games (Fix Storage Overflow) =====
+// ===== Auto Clean Old Games (Fix Storage Overflow) =====
 function purgeOldGameStorage(currentID) {
-  const keep = String(currentID);
+  const id = String(currentID);
 
-  const prefixes = [
-    "deck_all_",
-    "deck_pos_",
+  // Keys that grow per match because gameID changes
+  const perGamePrefixes = [
+    "deck_legendary_",
+    "deck_legendary_pos_",
+    "deck_normal_",
+    "deck_normal_pos_",
     "current_board_",
   ];
 
   for (let i = localStorage.length - 1; i >= 0; i--) {
-    const key = localStorage.key(i);
-    if (!key) continue;
+    const k = localStorage.key(i);
+    if (!k) continue;
 
-    const matched = prefixes.find(p => key.startsWith(p));
+    const matched = perGamePrefixes.find(p => k.startsWith(p));
     if (!matched) continue;
 
-    // احتفظ فقط بمفاتيح اللعبة الحالية
-    if (!key.includes(keep)) {
-      localStorage.removeItem(key);
+    // keep only keys that are strictly for the current game
+    const isCurrentDeckKey =
+      (k.startsWith("deck_legendary_") ||
+       k.startsWith("deck_legendary_pos_") ||
+       k.startsWith("deck_normal_") ||
+       k.startsWith("deck_normal_pos_")) &&
+      k.endsWith("_" + id);
+
+    const isCurrentBoardKey =
+      k.startsWith("current_board_") &&
+      k.startsWith(`current_board_${id}_p`);
+
+    if (!isCurrentDeckKey && !isCurrentBoardKey) {
+      localStorage.removeItem(k);
     }
   }
 }
@@ -73,13 +92,17 @@ const socket = io();
 const playerName = currentPlayer === 1 ? player1 : player2;
 instruction.textContent = `اللاعب ${playerName} اختر ${roundCount} بطاقات`;
 
-// ==================== Deck storage keys (per game) ====================
-function deckKey() { return `deck_all_${String(gameID)}`; }
-function deckPosKey() { return `deck_pos_${String(gameID)}`; }
+// ==================== Keys (per game) ====================
+// Legendary deck
+function lDeckKey() { return `deck_legendary_${String(gameID)}`; }
+function lPosKey()  { return `deck_legendary_pos_${String(gameID)}`; }
+// Normal deck
+function nDeckKey() { return `deck_normal_${String(gameID)}`; }
+function nPosKey()  { return `deck_normal_pos_${String(gameID)}`; }
 
-// لوحة 20 الحالية لكل لاعب حتى لو ريفرش
+// لوحة 20 الحالية لكل لاعب (حتى لو ريفرش)
 function boardKey() { return `current_board_${String(gameID)}_p${currentPlayer}`; }
-// =====================================================================
+// =========================================================
 
 // ---------- helpers ----------
 function shuffleInPlace(arr) {
@@ -90,10 +113,14 @@ function shuffleInPlace(arr) {
   return arr;
 }
 
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
+// ✅ صور + فيديو
 function isMediaFile(f) {
   return /\.(png|jpg|jpeg|webp|gif|avif|bmp|svg|apng|webm|mp4|ogg)$/i.test(String(f));
 }
-
 
 async function fetchFolderList(folder) {
   const res = await fetch(`/list-images/${folder}`);
@@ -101,121 +128,129 @@ async function fetchFolderList(folder) {
   return res.json();
 }
 
-// ---------- Deck building ----------
-async function buildAllCards() {
-  const [legendaryFilesRaw, normalFilesRaw] = await Promise.all([
-    fetchFolderList("legendary").catch(() => []),
-    fetchFolderList("normal").catch(() => []),
-  ]);
-
- const legendaryFiles = legendaryFilesRaw.filter(isMediaFile);
- const normalFiles = normalFilesRaw.filter(isMediaFile);
-
-
-  const all = [
-    ...legendaryFiles.map(f => ({
-      folder: "legendary",
-      filename: f,
-      key: `legendary/${f}`,
-      fullPath: `/images/legendary/${encodeURIComponent(f)}`
-    })),
-    ...normalFiles.map(f => ({
-      folder: "normal",
-      filename: f,
-      key: `normal/${f}`,
-      fullPath: `/images/normal/${encodeURIComponent(f)}`
-    })),
-  ];
-
-  return all;
-}
-
-async function ensureDeckReady() {
-  // (اختياري) جلب config
-  const cfg = await fetch("/api/config").then(r => r.json()).catch(() => null);
-  if (cfg && typeof cfg.legendaryRate === "number") LEGENDARY_RATE = cfg.legendaryRate;
-
-  const allCards = await buildAllCards();
-  if (!allCards.length) return { ok: false, allCards: [] };
-
-  // نتحقق هل deck الحالي يطابق عدد/مفاتيح الكروت (لو أضفت كروت جديدة)
-  const stored = JSON.parse(localStorage.getItem(deckKey()) || "null");
-  const storedPos = parseInt(localStorage.getItem(deckPosKey()) || "0", 10);
-
-  // نبني signature بسيط من keys (عشان لو تغيّر المحتوى نعيد بناء deck)
-  const keysNow = allCards.map(c => c.key).sort();
-  const sigNow = keysNow.join("|");
-
-  let rebuild = true;
-  if (stored && Array.isArray(stored.deck) && typeof stored.sig === "string") {
-    rebuild = stored.sig !== sigNow || stored.deck.length !== allCards.length;
-  }
-
-  if (rebuild) {
-    const deck = shuffleInPlace(allCards.slice()); // دورة جديدة تشمل كل الكروت ✅
-    localStorage.setItem(deckKey(), JSON.stringify({ sig: sigNow, deck }));
-    localStorage.setItem(deckPosKey(), "0");
-    return { ok: true, deck, pos: 0, allCards };
-  }
-
-  return { ok: true, deck: stored.deck, pos: Number.isFinite(storedPos) ? storedPos : 0, allCards };
-}
-
-function drawNextBoardFromDeck(deck, pos) {
-  // نسحب 20 كرت متتالين (مع لف + إعادة خلط عند نهاية الدورة)
-  const board = [];
-  let p = pos;
-
-  while (board.length < BOARD_SIZE) {
-    if (p >= deck.length) {
-      // انتهت الدورة: نعيد خلط deck ونبدأ من 0
-      shuffleInPlace(deck);
-      p = 0;
-    }
-    board.push(deck[p]);
-    p++;
-  }
-
-  return { board, newPos: p, deck };
-}
-
 // ---------- load & render ----------
 loadAndRender();
 
 async function loadAndRender() {
   try {
-    const ready = await ensureDeckReady();
-    if (!ready.ok) {
-      boxGrid.innerHTML = `<p class="text-red-500">لا توجد صور كافية.</p>`;
+    // ✅ جلب النسبة من السيرفر (ENV)
+    const cfg = await fetch("/api/config").then(r => r.json()).catch(() => null);
+    if (cfg && typeof cfg.legendaryRate === "number") {
+      LEGENDARY_RATE = clamp(cfg.legendaryRate, 0, 1);
+    }
+
+    // جب كل الملفات
+    const [legendaryFilesRaw, normalFilesRaw] = await Promise.all([
+      fetchFolderList("legendary").catch(() => []),
+      fetchFolderList("normal").catch(() => []),
+    ]);
+
+    const legendaryFiles = legendaryFilesRaw.filter(isMediaFile);
+    const normalFiles = normalFilesRaw.filter(isMediaFile);
+
+    if (!legendaryFiles.length && !normalFiles.length) {
+      boxGrid.innerHTML = `<p class="text-red-500">لا توجد ملفات كروت.</p>`;
       return;
     }
 
-    let { deck, pos } = ready;
+    // نبني deck لكل فئة (يشمل كل ملفاتها) + signature
+    const lKeysNow = legendaryFiles.map(f => `legendary/${f}`).sort().join("|");
+    const nKeysNow = normalFiles.map(f => `normal/${f}`).sort().join("|");
 
-    // لو عندنا لوحة محفوظة لهذا اللاعب (عشان الرفرش)
+    // Ensure legendary deck
+    let lStored = JSON.parse(localStorage.getItem(lDeckKey()) || "null");
+    let lPos = parseInt(localStorage.getItem(lPosKey()) || "0", 10);
+    if (!lStored || lStored.sig !== lKeysNow || !Array.isArray(lStored.deck) || lStored.deck.length !== legendaryFiles.length) {
+      const lDeck = shuffleInPlace(
+        legendaryFiles.map(f => ({
+          folder: "legendary",
+          filename: f,
+          key: `legendary/${f}`,
+          fullPath: `/images/legendary/${encodeURIComponent(f)}`
+        }))
+      );
+      lStored = { sig: lKeysNow, deck: lDeck };
+      localStorage.setItem(lDeckKey(), JSON.stringify(lStored));
+      localStorage.setItem(lPosKey(), "0");
+      lPos = 0;
+    }
+
+    // Ensure normal deck
+    let nStored = JSON.parse(localStorage.getItem(nDeckKey()) || "null");
+    let nPos = parseInt(localStorage.getItem(nPosKey()) || "0", 10);
+    if (!nStored || nStored.sig !== nKeysNow || !Array.isArray(nStored.deck) || nStored.deck.length !== normalFiles.length) {
+      const nDeck = shuffleInPlace(
+        normalFiles.map(f => ({
+          folder: "normal",
+          filename: f,
+          key: `normal/${f}`,
+          fullPath: `/images/normal/${encodeURIComponent(f)}`
+        }))
+      );
+      nStored = { sig: nKeysNow, deck: nDeck };
+      localStorage.setItem(nDeckKey(), JSON.stringify(nStored));
+      localStorage.setItem(nPosKey(), "0");
+      nPos = 0;
+    }
+
+    // لو عندنا لوحة محفوظة لهذا اللاعب (عشان refresh)
     const storedBoard = JSON.parse(localStorage.getItem(boardKey()) || "null");
-
     let boardCards;
+
     if (storedBoard && Array.isArray(storedBoard) && storedBoard.length === BOARD_SIZE) {
       boardCards = storedBoard;
     } else {
-      const drawn = drawNextBoardFromDeck(deck, pos);
-      boardCards = drawn.board;
+      // ✅ تحديد عدد legendary من ENV
+      const availableLegendary = lStored.deck.length;
+      const availableNormal = nStored.deck.length;
 
-      // حفظ deck بعد احتمال إعادة خلط + حفظ pos الجديد
-      localStorage.setItem(deckKey(), JSON.stringify(JSON.parse(localStorage.getItem(deckKey())))); // لا نغير sig
-      // ✅ أفضل: نخزن deck نفسه لأننا قد نكون خلطناه عند نهاية الدورة
-      const stored = JSON.parse(localStorage.getItem(deckKey()) || "{}");
-      stored.deck = deck;
-      localStorage.setItem(deckKey(), JSON.stringify(stored));
+      // target legendary
+      let L = Math.round(BOARD_SIZE * LEGENDARY_RATE);
+      L = clamp(L, 0, Math.min(BOARD_SIZE, availableLegendary));
 
-      localStorage.setItem(deckPosKey(), String(drawn.newPos));
+      // باقي اللوحة normal
+      let N = BOARD_SIZE - L;
+      if (availableNormal < N) {
+        // إذا normal قليل نعوض من legendary إن وجد
+        const shortage = N - availableNormal;
+        N = availableNormal;
+        L = clamp(L + shortage, 0, Math.min(BOARD_SIZE - N, availableLegendary));
+      }
 
-      // نحفظ لوحة هذا اللاعب حتى لو سوّى Refresh
+      // نسحب من legendary deck
+      const drawn = [];
+      for (let i = 0; i < L; i++) {
+        if (lPos >= lStored.deck.length) {
+          shuffleInPlace(lStored.deck);
+          lPos = 0;
+        }
+        drawn.push(lStored.deck[lPos++]);
+      }
+
+      // نسحب من normal deck
+      for (let i = 0; i < N; i++) {
+        if (nPos >= nStored.deck.length) {
+          shuffleInPlace(nStored.deck);
+          nPos = 0;
+        }
+        drawn.push(nStored.deck[nPos++]);
+      }
+
+      // خلط داخل اللوحة عشان ما تتكتل فئة
+      shuffleInPlace(drawn);
+      boardCards = drawn;
+
+      // حفظ المؤشرات و الـ decks بعد احتمال إعادة خلط
+      localStorage.setItem(lDeckKey(), JSON.stringify(lStored));
+      localStorage.setItem(nDeckKey(), JSON.stringify(nStored));
+      localStorage.setItem(lPosKey(), String(lPos));
+      localStorage.setItem(nPosKey(), String(nPos));
+
+      // حفظ لوحة هذا اللاعب حتى لو سوّى Refresh
       localStorage.setItem(boardKey(), JSON.stringify(boardCards));
     }
 
-    // بناء imageMap من 1..20
+    // imageMap 1..20
     imageMap = {};
     for (let i = 1; i <= BOARD_SIZE; i++) {
       imageMap[i] = boardCards[i - 1];
@@ -283,16 +318,41 @@ function toggleBox(index, btn) {
   confirmBtn.classList.toggle("hidden", selectedBoxes.length !== roundCount);
 }
 
-// ---------- Random ----------
-function randomSelect() {
-  randomSound.currentTime = 0;
-  randomSound.play().catch(() => {});
-
-  // فك تحديد أي شيء سابق
+function clearSelectionsUI() {
   document.querySelectorAll("#boxGrid button").forEach(btn => {
     const index = Number(btn.dataset.index);
     if (selectedBoxes.includes(index)) toggleBox(index, btn);
   });
+}
+
+function pickFromPool(pool) {
+  // pool: array of allowed indices (1..20)
+  const uniq = Array.from(new Set(pool)).filter(n => Number.isFinite(n) && n >= 1 && n <= BOARD_SIZE);
+  shuffleInPlace(uniq);
+
+  // فك تحديد الحالي
+  clearSelectionsUI();
+
+  // إذا ما يكفي، نكمّل من باقي الأرقام
+  if (uniq.length < roundCount) {
+    const rest = Array.from({ length: BOARD_SIZE }, (_, i) => i + 1).filter(n => !uniq.includes(n));
+    shuffleInPlace(rest);
+    uniq.push(...rest);
+  }
+
+  while (selectedBoxes.length < roundCount && uniq.length) {
+    const index = uniq.pop();
+    const btn = document.querySelector(`#boxGrid button[data-index="${index}"]`);
+    if (btn) toggleBox(index, btn);
+  }
+}
+
+function randomSelect() {
+  randomSound.currentTime = 0;
+  randomSound.play().catch(() => {});
+
+  // نفس منطقك الحالي: اختيار من 1..20
+  clearSelectionsUI();
 
   const indices = Array.from({ length: BOARD_SIZE }, (_, i) => i + 1);
   shuffleInPlace(indices);
@@ -304,7 +364,94 @@ function randomSelect() {
   }
 }
 
-// ---------- Confirm ----------
+// ===================== TACTICS =====================
+function range(a, b) {
+  const out = [];
+  for (let i = a; i <= b; i++) out.push(i);
+  return out;
+}
+
+function getTacticPool(tacticId) {
+  switch (tacticId) {
+    case "silver":
+      return [1,2,6,7,8,12,13,14,18,19,20];
+
+    case "reverse":
+      return [4,5,10,9,8,14,13,12,16,17,18];
+
+    case "range1_11":
+      return range(1, 11);
+
+    case "range2_12":
+      return range(2, 12);
+
+    case "range3_13":
+      return range(3, 13);
+
+    case "range4_14":
+      return range(4, 14);
+
+    case "range5_15":
+      return range(5, 15);
+
+    case "range6_16":
+      return range(6, 16);
+
+    case "range7_17":
+      return range(7, 17);
+
+    case "range8_18":
+      return range(8, 18);
+
+    case "range9_19":
+      return range(9, 19);
+
+    case "range10_20":
+      return range(10, 20);
+
+    case "odds_plus_14": {
+      const odds = range(1, 20).filter(n => n % 2 === 1);
+      if (!odds.includes(14)) odds.push(14);
+      return odds;
+    }
+
+    case "evens_plus_random": {
+      const evens = range(1, 20).filter(n => n % 2 === 0);
+      const odds = range(1, 20).filter(n => n % 2 === 1);
+      const randomOdd = odds[Math.floor(Math.random() * odds.length)];
+      if (Number.isFinite(randomOdd)) evens.push(randomOdd);
+      return evens;
+    }
+
+    default:
+      // fallback
+      return range(1, 20);
+  }
+}
+
+// Modal controls
+function openTacticModal() {
+  if (!tacticModal) return; // لو ما فيه مودال
+  tacticModal.classList.remove("hidden");
+  tacticModal.classList.add("flex");
+}
+
+function closeTacticModal() {
+  if (!tacticModal) return;
+  tacticModal.classList.add("hidden");
+  tacticModal.classList.remove("flex");
+}
+
+function applyTactic() {
+  const tacticId = tacticSelectEl ? tacticSelectEl.value : "silver";
+  const pool = getTacticPool(tacticId);
+  pickFromPool(pool);
+
+  closeTacticModal();
+}
+
+// ===================================================
+
 function confirmSelection() {
   if (selectedBoxes.length !== roundCount) {
     alert("اختر العدد الصحيح");
@@ -324,10 +471,9 @@ function confirmSelection() {
     picks
   });
 
-  // ✅ بعد التأكيد: نحذف لوحة هذا اللاعب عشان اللي بعده ياخذ 20 جديدة من الـDeck
+  // ✅ بعد التأكيد: نحذف لوحة هذا اللاعب ليأخذ 20 جديدة في المرة القادمة
   localStorage.removeItem(boardKey());
 
-  // انتقال اللاعبين
   if (currentPlayer === 1) {
     localStorage.setItem("currentPlayer", "2");
     location.reload();
@@ -340,3 +486,8 @@ function confirmSelection() {
 
 window.confirmSelection = confirmSelection;
 window.randomSelect = randomSelect;
+
+// expose tactics
+window.openTacticModal = openTacticModal;
+window.closeTacticModal = closeTacticModal;
+window.applyTactic = applyTactic;
