@@ -195,37 +195,30 @@ const pendingRequests = new Map();
 
 /* ================== Helpers ================== */
 function createMedia(url, className, onClick) {
-  const isVideo = /\.(webm|mp4)(\?|#|$)/i.test(String(url || ""));
-
-  if (isVideo) {
+  const isWebm = /\.webm(\?|#|$)/i.test(url);
+  if (isWebm) {
     const vid = document.createElement("video");
     vid.src = url;
-    vid.autoplay = true;
-    vid.loop = true;
-    vid.muted = true;
-    vid.playsInline = true;
-
-    vid.controls = false;
-    vid.disablePictureInPicture = true;
+    vid.autoplay = true; vid.loop = true; vid.muted = true; vid.playsInline = true;
+    vid.controls = false;                              // no controls UI
+    vid.disablePictureInPicture = true;                // no PiP
     vid.setAttribute("controlsList", "nodownload noplaybackrate noremoteplayback");
     vid.setAttribute("preload", "metadata");
-
     vid.oncontextmenu = (e) => e.preventDefault();
     vid.draggable = false;
     vid.className = className;
     if (onClick) vid.onclick = onClick;
     return vid;
+  } else {
+    const img = document.createElement("img");
+    img.src = url;
+    img.className = className;
+    img.oncontextmenu = (e) => e.preventDefault();
+    img.draggable = false;
+    if (onClick) img.onclick = onClick;
+    return img;
   }
-
-  const img = document.createElement("img");
-  img.src = url;
-  img.className = className;
-  img.oncontextmenu = (e) => e.preventDefault();
-  img.draggable = false;
-  if (onClick) img.onclick = onClick;
-  return img;
 }
-
 
 // Normalize to [{text, used}]
 function normalizeAbilityList(arr) {

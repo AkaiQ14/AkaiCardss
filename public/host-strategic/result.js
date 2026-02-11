@@ -13,9 +13,19 @@ if (!Number.isFinite(scores?.[player2])) scores[player2] = startingHP;
 
 const roundTitle = document.getElementById("roundTitle");
 
+// ✅ Replace abilities headings with player names
+try {
+  const t1 = document.getElementById("p1AbilitiesTitle");
+  const t2 = document.getElementById("p2AbilitiesTitle");
+  if (t1) t1.textContent = player1;
+  if (t2) t2.textContent = player2;
+} catch {}
+
+
 // Ability storage keys
 const P1_ABILITIES_KEY = "player1Abilities";
 const P2_ABILITIES_KEY = "player2Abilities";
+const ABILITIES_MASTER_KEY = "abilitiesMasterList"; // mirror from start page
 const NOTES_KEY = (name) => `notes:${name}`;
 
 // ===== Notes normalize (FIXED) =====
@@ -227,31 +237,18 @@ function syncServerAbilities(){
 }
 
 function createMedia(url, className, playSfx = false) {
-  const u = String(url || "");
-  const isWebm = /\.webm(\?|#|$)/i.test(u);
-  const isVideo = /\.(webm|mp4)(\?|#|$)/i.test(u);
-
-  if (isVideo) {
+  const isWebm = /\.webm(\?|#|$)/i.test(url || "");
+  if (isWebm) {
     const v = document.createElement("video");
-    v.src = u;
-    v.autoplay = true;
-    v.loop = true;
-    v.muted = true;
-    v.playsInline = true;
+    v.src = url; v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
     v.className = className;
-
-    // ✅ الصوت/المؤثرات فقط للـ webm (لو عندك نظام WebmSfx)
-    if (isWebm && playSfx && window.WebmSfx) window.WebmSfx.attachToMedia(v, u);
-
+    if (playSfx && window.WebmSfx) window.WebmSfx.attachToMedia(v, url);
     return v;
+  } else {
+    const img = document.createElement("img");
+    img.src = url; img.className = className; return img;
   }
-
-  const img = document.createElement("img");
-  img.src = u;
-  img.className = className;
-  return img;
 }
-
 
 function abilityRow(ab, onToggle) {
   const row = document.createElement("button");
@@ -401,7 +398,16 @@ function renderVsRow() {
     // لو ما كان موجود أصلاً
     if (!found && delta !== 0) {
       const sign = delta > 0 ? "+" : "-";
-      nextLines.unshift(`${sign}${Math.abs(delta)} ${cat}`);
+      const newLine = `${sign}${Math.abs(delta)} ${cat}`;
+
+      // ✅ أدخل السطر الجديد بعد آخر سطر Quick (+/- رقم) مباشرة
+      // بحيث: أول إضافة تكون في أول سطر، وأي إضافة لاحقة تأتي تحتها (لا فوقها)
+      let insertAt = 0;
+      for (let i = 0; i < nextLines.length; i++) {
+        if (/^[+\-]\d+\s+/.test(nextLines[i].trim())) insertAt = i + 1;
+        else break; // نفترض أن أي كتابة يدوية تأتي بعد الـ Quick lines
+      }
+      nextLines.splice(insertAt, 0, newLine);
     }
 
     const result = nextLines.join("\n");
@@ -715,7 +721,9 @@ function confirmWinner() {
 window.confirmWinner = confirmWinner;
 
 // ===== transfer modal =====
-function openTransferModal(fromKey, fromName, toName){
+function openTransferModal(fromKey){
+  const fromName = (fromKey === P1_ABILITIES_KEY) ? player1 : player2;
+  const toName   = (fromKey === P1_ABILITIES_KEY) ? player2 : player1;
   const list  = loadAbilities(fromKey);
   const modal = document.getElementById("transferModal");
   const grid  = document.getElementById("abilityGrid");
@@ -755,6 +763,168 @@ function closeTransferModal(){
 window.openTransferModal = openTransferModal;
 window.closeTransferModal = closeTransferModal;
 
+// ===== swap ability modal =====
+let _swapTargetKey = null;
+let _swapTargetLabel = "";
+
+function loadMasterAbilities() {
+  try {
+    const raw = localStorage.getItem(ABILITIES_MASTER_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.map(s => String(s).trim()).filter(Boolean) : [];
+  } catch { return []; }
+}
+
+function openSwapAbilityModal(targetKey) {
+  _swapTargetKey = targetKey;
+  const targetName = (targetKey === P1_ABILITIES_KEY) ? player1 : player2;
+  _swapTargetLabel = targetName || "اللاعب";
+
+  const modal = document.getElementById("swapAbilityModal");
+  const grid  = document.getElementById("swapAbilityGrid");
+  const title = document.getElementById("swapAbilityTitle");
+  if (!modal || !grid || !title) return;
+
+  title.textContent = `تبديل قدرة لدى ${_swapTargetLabel}`;
+  grid.innerHTML = "";
+
+  const list = normalizeAbilityList(loadAbilities(_swapTargetKey));
+  if (!list.length) {
+    const p = document.createElement("p");
+    p.className = "text-yellow-200 text-center py-2";
+    p.textContent = "لا توجد قدرات لتبديلها.";
+    grid.appendChild(p);
+  } else {
+    list.forEach((ab, idx) => {
+      const btn = document.createElement("button");
+      btn.className = "w-full text-center px-3 py-2 rounded-lg border-2 border-yellow-500 bg-[#7b2131] hover:bg-[#8b2a3a] font-bold";
+      btn.textContent = ab.text + (ab.used ? " (مستعملة)" : "");
+      btn.onclick = () => doSwapAbility(idx);
+      grid.appendChild(btn);
+    });
+  }
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+}
+
+function closeSwapAbilityModal() {
+  const modal = document.getElementById("swapAbilityModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+
+
+// ===== Swap (Host picks) =====
+let _swapIndex = null;
+
+function openSwapPickModal(index) {
+  _swapIndex = index;
+
+  const current = normalizeAbilityList(loadAbilities(_swapTargetKey));
+  const oldText = current[index]?.text || "";
+
+  const modal = document.getElementById("swapPickModal");
+  const grid  = document.getElementById("swapPickGrid");
+  const title = document.getElementById("swapPickTitle");
+  const hint  = document.getElementById("swapPickHint");
+  if (!modal || !grid || !title) return;
+
+  title.textContent = `اختر القدرة الجديدة لدى ${_swapTargetLabel}`;
+  if (hint) hint.textContent = oldText ? `سيتم استبدال «${oldText}»` : "";
+
+  grid.innerHTML = "";
+
+  const master = loadMasterAbilities();
+  if (!master.length) {
+    const p = document.createElement("p");
+    p.className = "text-yellow-200 text-center py-2";
+    p.textContent = "⚠️ لا توجد قائمة قدرات جاهزة (افتح صفحة البداية start قبل المباراة).";
+    grid.appendChild(p);
+  } else {
+    // Gather current abilities for quick labeling
+    const p1 = new Set(normalizeAbilityList(loadAbilities(P1_ABILITIES_KEY)).map(a => a.text));
+    const p2 = new Set(normalizeAbilityList(loadAbilities(P2_ABILITIES_KEY)).map(a => a.text));
+    const owned = new Set([...p1, ...p2]);
+
+    master.forEach((text) => {
+      const btn = document.createElement("button");
+      const isSame = text === oldText;
+      const isOwned = owned.has(text) && !isSame;
+
+      btn.className = "w-full text-center px-3 py-2 rounded-lg border-2 border-yellow-500 bg-[#7b2131] hover:bg-[#8b2a3a] font-bold transition";
+      btn.textContent = text;
+
+      if (isSame) {
+        btn.className += " opacity-40 cursor-not-allowed";
+        btn.disabled = true;
+        btn.title = "هذه نفس القدرة الحالية";
+      } else if (isOwned) {
+        // Still allow host to choose, but visually mark it
+        const tag = document.createElement("span");
+        tag.className = "ml-2 inline-block text-[10px] px-2 py-[2px] rounded-full bg-black/30 border border-yellow-400/40";
+        tag.textContent = "موجودة بالفعل";
+        btn.appendChild(tag);
+      }
+
+      btn.onclick = () => confirmSwapPick(text);
+      grid.appendChild(btn);
+    });
+  }
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+}
+
+function closeSwapPickModal() {
+  const modal = document.getElementById("swapPickModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+
+function confirmSwapPick(newText) {
+  if (!_swapTargetKey || _swapIndex === null) return;
+
+  const current = normalizeAbilityList(loadAbilities(_swapTargetKey));
+  if (!current[_swapIndex]) return;
+
+  const oldText = current[_swapIndex].text;
+  if (!newText || newText === oldText) return;
+
+  current[_swapIndex] = { text: newText, used: false };
+  saveAbilities(_swapTargetKey, current);
+
+  // re-render both panels + sync sockets (order page updates instantly)
+  renderAbilities(P2_ABILITIES_KEY, document.getElementById("p2Abilities"));
+  renderAbilities(P1_ABILITIES_KEY, document.getElementById("p1Abilities"));
+  syncServerAbilities();
+  broadcast();
+
+  showToast(`🔁 تم تبديل «${oldText}» إلى «${newText}» لدى ${_swapTargetLabel}`);
+  closeSwapPickModal();
+  closeSwapAbilityModal();
+}
+
+function doSwapAbility(index) {
+  // step 1: pick which ability to replace (already clicked)
+  if (!_swapTargetKey) return;
+  const current = normalizeAbilityList(loadAbilities(_swapTargetKey));
+  if (!current[index]) return;
+
+  // step 2: host chooses replacement from master list
+  openSwapPickModal(index);
+}
+
+window.openSwapPickModal = openSwapPickModal;
+window.closeSwapPickModal = closeSwapPickModal;
+
+
+window.openSwapAbilityModal = openSwapAbilityModal;
+window.closeSwapAbilityModal = closeSwapAbilityModal;
+
+
 /* ===== abilities persistence to server (NEW) ===== */
 async function persistAbilityToServer(text) {
   try {
@@ -777,15 +947,16 @@ async function persistAbilityToServer(text) {
 
 // ===== Quick Add Ability modal =====
 let _addTargetKey = null;
-function openAddAbilityModal(targetKey, playerLabel) {
+function openAddAbilityModal(targetKey) {
   _addTargetKey = targetKey;
+  const targetName = (targetKey === P1_ABILITIES_KEY) ? player1 : player2;
   const modal = document.getElementById("addAbilityModal");
   const input = document.getElementById("addAbilityInput");
   if (!modal || !input) return;
   // ابدأ من السطر الثاني دائماً
   input.value = "\n";
   // (اختياري) نص مساعد — placeholder لن يظهر لأننا نضع سطر أول فارغ
-  input.placeholder = `اكتب نص قدرة لإضافتها لـ ${playerLabel}…`;
+  input.placeholder = `اكتب نص قدرة لإضافتها لـ ${targetName}…`;
   modal.classList.remove("hidden"); modal.classList.add("flex");
   setTimeout(() => { input.focus(); try { input.setSelectionRange(1, 1); } catch {} }, 0);
 }
